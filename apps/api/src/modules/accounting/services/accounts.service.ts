@@ -35,6 +35,8 @@ export class AccountsService {
           : {}),
       },
       orderBy: { code: 'asc' },
+      take: query.take ?? 50,
+      skip: query.skip ?? 0,
       include: {
         children: {
           where: { is_active: true },

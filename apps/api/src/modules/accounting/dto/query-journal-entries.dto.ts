@@ -1,8 +1,24 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString, IsDateString } from 'class-validator';
+import { IsEnum, IsOptional, IsString, IsDateString, IsInt, Min, Max } from 'class-validator';
+import { Type } from 'class-transformer';
 import { JournalEntryStatus, JournalEntryType } from '@coap/database';
 
 export class QueryJournalEntriesDto {
+  @ApiPropertyOptional({ description: 'Number of records to return', default: 50 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(1000)
+  take?: number;
+
+  @ApiPropertyOptional({ description: 'Number of records to skip', default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  skip?: number;
+
   @ApiPropertyOptional({ enum: JournalEntryStatus })
   @IsOptional()
   @IsEnum(JournalEntryStatus)

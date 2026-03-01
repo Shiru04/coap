@@ -177,20 +177,29 @@ export class GlEngineService {
     const prefix = settings?.journal_entry_prefix ?? 'JE';
     const year = new Date().getFullYear();
 
-    const latest = await this.db.journalEntry.findFirst({
-      where: {
-        company_id: companyId,
-        entry_number: { startsWith: `${prefix}-${year}-` },
+    // Use a serializable transaction to prevent race conditions on entry numbering.
+    // The @@unique([company_id, entry_number]) constraint is the final safety net.
+    const entryNumber = await this.db.$transaction(
+      async (tx) => {
+        const latest = await tx.journalEntry.findFirst({
+          where: {
+            company_id: companyId,
+            entry_number: { startsWith: `${prefix}-${year}-` },
+          },
+          orderBy: { entry_number: 'desc' },
+          select: { entry_number: true },
+        });
+
+        const lastNum = latest
+          ? parseInt(latest.entry_number.split('-').pop() ?? '0', 10)
+          : 0;
+
+        return `${prefix}-${year}-${String(lastNum + 1).padStart(5, '0')}`;
       },
-      orderBy: { entry_number: 'desc' },
-      select: { entry_number: true },
-    });
+      { isolationLevel: 'Serializable' },
+    );
 
-    const lastNum = latest
-      ? parseInt(latest.entry_number.split('-').pop() ?? '0', 10)
-      : 0;
-
-    return `${prefix}-${year}-${String(lastNum + 1).padStart(5, '0')}`;
+    return entryNumber;
   }
 
   private async findPeriodForDate(companyId: string, date: Date) {

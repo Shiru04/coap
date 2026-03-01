@@ -9,7 +9,12 @@ export interface AuditLogData {
   entity_id: string;
   before?: unknown;
   after?: unknown;
+  /** If true, audit failure will propagate and abort the operation. Default: true for financial actions. */
+  critical?: boolean;
 }
+
+/** Financial actions where audit trail is mandatory */
+const CRITICAL_ACTIONS = ['POST', 'VOID', 'LOCK', 'UNLOCK', 'CLOSE', 'DELETE'];
 
 @Injectable()
 export class AuditService {
@@ -18,6 +23,8 @@ export class AuditService {
   constructor(private readonly db: PrismaService) {}
 
   async log(data: AuditLogData): Promise<void> {
+    const isCritical = data.critical ?? CRITICAL_ACTIONS.includes(data.action);
+
     try {
       await this.db.auditLog.create({
         data: {
@@ -31,8 +38,10 @@ export class AuditService {
         },
       });
     } catch (error) {
-      // Audit log failures must never crash the main operation
       this.logger.error(`Audit log failed: ${String(error)}`);
+      if (isCritical) {
+        throw error;
+      }
     }
   }
 }

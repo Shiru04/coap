@@ -19,7 +19,7 @@ export class ClerkAuthGuard implements CanActivate {
     const headers = request['headers'] as Record<string, string>;
 
     // Development shortcut: accept direct headers
-    if (process.env.NODE_ENV !== 'production') {
+    if (process.env.NODE_ENV === 'development') {
       const companyId = headers['x-company-id'] ?? process.env.DEFAULT_COMPANY_ID;
       const userId = headers['x-user-id'] ?? 'dev-user';
       if (companyId) {

@@ -1,5 +1,5 @@
-import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class LockPeriodDto {
   @ApiPropertyOptional({ description: 'Optional reason for locking the period' })
@@ -10,9 +10,9 @@ export class LockPeriodDto {
 }
 
 export class UnlockPeriodDto {
-  @ApiPropertyOptional({ description: 'Reason for unlocking — required for audit trail' })
-  @IsOptional()
+  @ApiProperty({ description: 'Reason for unlocking — required for audit trail' })
   @IsString()
+  @IsNotEmpty()
   @MaxLength(500)
-  reason?: string;
+  reason: string;
 }

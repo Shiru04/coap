@@ -50,6 +50,20 @@ export class FiscalYearsService {
     const startDate = startOfMonth(new Date(dto.start_date));
     const endDate = endOfMonth(addMonths(startDate, 11));
 
+    // Validate no overlapping fiscal years
+    const overlapping = await this.db.fiscalYear.findFirst({
+      where: {
+        company_id: companyId,
+        start_date: { lte: endDate },
+        end_date: { gte: startDate },
+      },
+    });
+    if (overlapping) {
+      throw new ConflictException(
+        `Date range overlaps with existing fiscal year "${overlapping.name}" (${overlapping.start_date.toISOString().slice(0, 10)} – ${overlapping.end_date.toISOString().slice(0, 10)})`,
+      );
+    }
+
     // Build 12 monthly periods
     const periodData = Array.from({ length: 12 }, (_, i) => {
       const periodStart = startOfMonth(addMonths(startDate, i));

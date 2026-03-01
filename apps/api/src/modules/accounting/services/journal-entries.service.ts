@@ -47,6 +47,8 @@ export class JournalEntriesService {
           : {}),
       },
       orderBy: { date: 'desc' },
+      take: query.take ?? 50,
+      skip: query.skip ?? 0,
       include: {
         lines: { include: { account: { select: { code: true, name: true } } } },
         period: { select: { name: true } },
@@ -147,6 +149,14 @@ export class JournalEntriesService {
       );
     }
 
+    // BUG-007/008: When date changes, check period lock and reassign period_id
+    let dateChangeData: { date: Date; period_id: string | null } | undefined;
+    if (dto.date) {
+      const newDate = new Date(dto.date);
+      const period = await this.glEngine.checkPeriodLock(companyId, newDate);
+      dateChangeData = { date: newDate, period_id: period?.id ?? null };
+    }
+
     const before = { id: entry.id, status: entry.status, memo: entry.memo };
 
     const updated = await this.db.$transaction(async (tx) => {
@@ -157,7 +167,7 @@ export class JournalEntriesService {
       return tx.journalEntry.update({
         where: { id },
         data: {
-          date: dto.date ? new Date(dto.date) : undefined,
+          ...dateChangeData,
           memo: dto.memo,
           reference: dto.reference,
           ...(dto.lines
