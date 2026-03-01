@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { ConfigModule } from "@nestjs/config";
 import { ThrottlerModule } from "@nestjs/throttler";
+import { DatabaseModule } from "./database/database.module";
 
 // Core modules
 import { AuthModule } from "./modules/auth/auth.module";
@@ -42,6 +43,9 @@ import { ReportsModule } from "./modules/reports/reports.module";
         limit: 100,
       },
     ]),
+
+    // Database (global)
+    DatabaseModule,
 
     // Core
     AuthModule,

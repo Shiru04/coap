@@ -40,7 +40,7 @@ model Company {
 model CompanySettings {
   id                        String   @id @default(cuid())
   company_id                String   @unique
-  
+
   // Accounting
   accounting_method         AccountingMethod @default(ACCRUAL)
   fiscal_year_start_month   Int      @default(1) // 1 = January
@@ -49,6 +49,8 @@ model CompanySettings {
   bill_prefix               String   @default("BILL")
   estimate_prefix           String   @default("EST")
   po_prefix                 String   @default("PO")
+  journal_entry_prefix      String   @default("JE")
+  require_approval_before_posting Boolean @default(false)
   
   // Features (configurable for future product)
   retainage_ar_enabled      Boolean  @default(true)
@@ -170,28 +172,35 @@ model Account {
 // =============================================================================
 
 model JournalEntry {
-  id              String          @id @default(cuid())
+  id              String              @id @default(cuid())
   company_id      String
   period_id       String?
   entry_number    String
   date            DateTime
-  type            JournalEntryType @default(STANDARD)
+  status          JournalEntryStatus  @default(DRAFT)
+  type            JournalEntryType    @default(STANDARD)
   memo            String?
   reference       String?
-  is_adjusting    Boolean         @default(false)
-  is_reversing    Boolean         @default(false)
-  reverses_id     String?         // ID of entry this reverses
-  source_type     String?         // "INVOICE", "BILL", "PAYMENT", etc.
-  source_id       String?         // ID of source document
+  is_adjusting    Boolean             @default(false)
+  is_reversing    Boolean             @default(false)
+  reverses_id     String?             // ID of entry this reverses
+  source_type     String?             // "INVOICE", "BILL", "PAYMENT", etc.
+  source_id       String?             // ID of source document
+  posted_at       DateTime?
+  posted_by       String?
+  voided_at       DateTime?
+  voided_by       String?
   created_by      String
-  created_at      DateTime        @default(now())
-  updated_at      DateTime        @updatedAt
+  created_at      DateTime            @default(now())
+  updated_at      DateTime            @updatedAt
 
-  period          AccountingPeriod? @relation(fields: [period_id], references: [id])
+  period          AccountingPeriod?   @relation(fields: [period_id], references: [id])
   lines           JournalEntryLine[]
 
+  @@unique([company_id, entry_number])
   @@index([company_id])
   @@index([company_id, date])
+  @@index([company_id, status])
   @@map("journal_entries")
 }
 
@@ -1268,6 +1277,12 @@ enum AccountType {
   INCOME
   EXPENSE
   COST_OF_GOODS_SOLD
+}
+
+enum JournalEntryStatus {
+  DRAFT
+  POSTED
+  VOIDED
 }
 
 enum JournalEntryType {
