@@ -37,6 +37,7 @@ export class GlEngineService {
 
     await this.checkPeriodLock(companyId, entry.date);
     this.validateDoubleEntry(entry.lines);
+    await this.validateAccountOwnership(companyId, entry.lines.map((l) => l.account_id));
 
     const now = new Date();
     return this.db.journalEntry.update({
@@ -62,6 +63,7 @@ export class GlEngineService {
     const entryDate = new Date(data.date);
     await this.checkPeriodLock(companyId, entryDate);
     this.validateDoubleEntry(data.lines);
+    await this.validateAccountOwnership(companyId, data.lines.map((l) => l.account_id));
 
     const entryNumber = await this.getNextEntryNumber(companyId);
     const period = await this.findPeriodForDate(companyId, entryDate);
@@ -110,6 +112,12 @@ export class GlEngineService {
         throw new BadRequestException('Journal entry line amounts cannot be negative');
       }
 
+      if (!debit.isZero() && !credit.isZero()) {
+        throw new BadRequestException(
+          'Each journal entry line must have either a debit or a credit, not both',
+        );
+      }
+
       totalDebits = totalDebits.plus(debit);
       totalCredits = totalCredits.plus(credit);
     }
@@ -129,10 +137,31 @@ export class GlEngineService {
    * Check if the period containing the given date is locked.
    * Throws ForbiddenException if locked.
    */
-  async checkPeriodLock(companyId: string, date: Date): Promise<void> {
+  async checkPeriodLock(companyId: string, date: Date) {
     const period = await this.findPeriodForDate(companyId, date);
     if (period?.is_closed) {
       throw new ForbiddenException(`Period ${period.name} is locked.`);
+    }
+    return period;
+  }
+
+  /**
+   * Validate that all account IDs belong to the given company.
+   * Throws BadRequestException if any account is missing or belongs to another company.
+   */
+  async validateAccountOwnership(companyId: string, accountIds: string[]): Promise<void> {
+    const uniqueIds = [...new Set(accountIds)];
+    const accounts = await this.db.account.findMany({
+      where: { id: { in: uniqueIds }, company_id: companyId },
+      select: { id: true },
+    });
+
+    if (accounts.length !== uniqueIds.length) {
+      const foundIds = new Set(accounts.map((a) => a.id));
+      const missing = uniqueIds.filter((id) => !foundIds.has(id));
+      throw new BadRequestException(
+        `Invalid account IDs: ${missing.join(', ')}. Accounts must belong to your company.`,
+      );
     }
   }
 

@@ -67,6 +67,11 @@ export class JournalEntriesService {
   }
 
   async create(companyId: string, dto: CreateJournalEntryDto, userId: string) {
+    await this.glEngine.validateAccountOwnership(
+      companyId,
+      dto.lines.map((l) => l.account_id),
+    );
+
     const entryNumber = await this.glEngine.getNextEntryNumber(companyId);
     const entryDate = new Date(dto.date);
 
@@ -132,6 +137,13 @@ export class JournalEntriesService {
     if (entry.status !== JournalEntryStatus.DRAFT) {
       throw new ForbiddenException(
         'Only DRAFT journal entries can be modified. Use a reversing entry to correct a posted entry.',
+      );
+    }
+
+    if (dto.lines) {
+      await this.glEngine.validateAccountOwnership(
+        companyId,
+        dto.lines.map((l) => l.account_id),
       );
     }
 
@@ -221,8 +233,8 @@ export class JournalEntriesService {
     }
 
     const today = new Date();
-    // Check the reversal date period is not locked
-    await this.glEngine.checkPeriodLock(companyId, today);
+    // Check the reversal date period is not locked — also capture the period for the reversal
+    const reversalPeriod = await this.glEngine.checkPeriodLock(companyId, today);
 
     const reversalNumber = await this.glEngine.getNextEntryNumber(companyId);
 
@@ -242,6 +254,7 @@ export class JournalEntriesService {
           company_id: companyId,
           entry_number: reversalNumber,
           date: today,
+          period_id: reversalPeriod?.id,
           status: JournalEntryStatus.POSTED,
           type: JournalEntryType.REVERSING,
           memo: `VOID: ${entry.memo ?? entry.entry_number}`,

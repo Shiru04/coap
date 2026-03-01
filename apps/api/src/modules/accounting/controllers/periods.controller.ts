@@ -13,6 +13,8 @@ import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery } from '@nestjs/swagger'
 import { IsOptional, IsString } from 'class-validator';
 import { ClerkAuthGuard } from '../../auth/guards/clerk-auth.guard';
 import { CompanyGuard } from '../guards/company.guard';
+import { RolesGuard } from '../../../common/guards/roles.guard';
+import { Roles } from '../../../common/decorators/roles.decorator';
 import { CompanyId, UserId } from '../../../common/decorators/company-context.decorator';
 import { PeriodsService } from '../services/periods.service';
 import { LockPeriodDto, UnlockPeriodDto } from '../dto/lock-period.dto';
@@ -39,7 +41,9 @@ export class PeriodsController {
 
   @Post(':id/lock')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Lock a period — prevents all GL writes to this period' })
+  @Roles('ADMIN')
+  @UseGuards(RolesGuard)
+  @ApiOperation({ summary: 'Lock a period — prevents all GL writes to this period (admin only)' })
   lock(
     @CompanyId() companyId: string,
     @UserId() userId: string,
@@ -51,6 +55,8 @@ export class PeriodsController {
 
   @Post(':id/unlock')
   @HttpCode(HttpStatus.OK)
+  @Roles('ADMIN')
+  @UseGuards(RolesGuard)
   @ApiOperation({ summary: 'Unlock a period (admin only)' })
   unlock(
     @CompanyId() companyId: string,

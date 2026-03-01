@@ -64,9 +64,15 @@ export class AccountsService {
       select: { debit: true, credit: true },
     });
 
-    const balance = lines.reduce((acc, line) => {
+    const CREDIT_NORMAL_TYPES = ['LIABILITY', 'EQUITY', 'INCOME', 'COST_OF_GOODS_SOLD'];
+
+    const rawBalance = lines.reduce((acc, line) => {
       return acc.plus(new Decimal(line.debit.toString())).minus(new Decimal(line.credit.toString()));
     }, new Decimal(0));
+
+    const balance = CREDIT_NORMAL_TYPES.includes(account.type)
+      ? rawBalance.negated()
+      : rawBalance;
 
     return { ...account, balance: balance.toFixed(2) };
   }
