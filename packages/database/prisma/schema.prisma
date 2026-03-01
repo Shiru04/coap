@@ -1,0 +1,1476 @@
+// =============================================================================
+// COAP — Construction Operations & Accounting Platform
+// Prisma Schema — PostgreSQL (production) + SQLite (offline via Electron)
+// All tables include company_id for future multi-tenant readiness.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// COMPANY & SETTINGS
+// =============================================================================
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  legal_name  String?
+  ein         String?  // Employer Identification Number
+  address     Json?
+  phone       String?
+  email       String?
+  website     String?
+  logo_url    String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  settings    CompanySettings?
+  users       User[]
+  fiscal_years FiscalYear[]
+
+  @@map("companies")
+}
+
+model CompanySettings {
+  id                        String   @id @default(cuid())
+  company_id                String   @unique
+  
+  // Accounting
+  accounting_method         AccountingMethod @default(ACCRUAL)
+  fiscal_year_start_month   Int      @default(1) // 1 = January
+  default_currency          String   @default("USD")
+  invoice_prefix            String   @default("INV")
+  bill_prefix               String   @default("BILL")
+  estimate_prefix           String   @default("EST")
+  po_prefix                 String   @default("PO")
+  
+  // Features (configurable for future product)
+  retainage_ar_enabled      Boolean  @default(true)
+  retainage_ap_enabled      Boolean  @default(true)
+  default_retainage_pct     Decimal  @default(10) @db.Decimal(5, 2)
+  progress_invoicing_enabled Boolean @default(true)
+  aia_billing_enabled       Boolean  @default(true)
+  certified_payroll_enabled Boolean  @default(false)
+  multi_state_payroll       Boolean  @default(false)
+  workers_comp_tracking     Boolean  @default(true)
+  kanban_job_costing_link   Boolean  @default(false)
+  
+  // Integrations
+  amex_feed_enabled         Boolean  @default(false)
+  plaid_enabled             Boolean  @default(false)
+
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  company     Company  @relation(fields: [company_id], references: [id])
+
+  @@map("company_settings")
+}
+
+// =============================================================================
+// AUTH & USERS
+// =============================================================================
+
+model User {
+  id          String   @id @default(cuid())
+  company_id  String
+  clerk_id    String   @unique
+  email       String
+  first_name  String?
+  last_name   String?
+  role        UserRole @default(STAFF)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  company     Company  @relation(fields: [company_id], references: [id])
+  
+  @@index([company_id])
+  @@map("users")
+}
+
+// =============================================================================
+// FISCAL YEARS & PERIODS
+// =============================================================================
+
+model FiscalYear {
+  id          String     @id @default(cuid())
+  company_id  String
+  name        String     // "FY 2024"
+  start_date  DateTime
+  end_date    DateTime
+  is_closed   Boolean    @default(false)
+  closed_at   DateTime?
+  closed_by   String?
+  created_at  DateTime   @default(now())
+
+  company     Company    @relation(fields: [company_id], references: [id])
+  periods     AccountingPeriod[]
+
+  @@index([company_id])
+  @@map("fiscal_years")
+}
+
+model AccountingPeriod {
+  id              String     @id @default(cuid())
+  company_id      String
+  fiscal_year_id  String
+  name            String     // "January 2024"
+  period_number   Int        // 1-12
+  start_date      DateTime
+  end_date        DateTime
+  is_closed       Boolean    @default(false)
+  closed_at       DateTime?
+  closed_by       String?
+  created_at      DateTime   @default(now())
+
+  fiscal_year     FiscalYear @relation(fields: [fiscal_year_id], references: [id])
+  journal_entries JournalEntry[]
+
+  @@index([company_id])
+  @@map("accounting_periods")
+}
+
+// =============================================================================
+// CHART OF ACCOUNTS
+// =============================================================================
+
+model Account {
+  id              String      @id @default(cuid())
+  company_id      String
+  code            String      // e.g. "1000", "4010"
+  name            String
+  type            AccountType
+  sub_type        String?     // e.g. "Checking", "Accounts Receivable"
+  parent_id       String?
+  description     String?
+  is_active       Boolean     @default(true)
+  is_system       Boolean     @default(false) // Cannot be deleted
+  opening_balance Decimal     @default(0) @db.Decimal(15, 2)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  parent          Account?    @relation("AccountHierarchy", fields: [parent_id], references: [id])
+  children        Account[]   @relation("AccountHierarchy")
+  journal_lines   JournalEntryLine[]
+
+  @@unique([company_id, code])
+  @@index([company_id])
+  @@map("accounts")
+}
+
+// =============================================================================
+// GENERAL LEDGER & JOURNAL ENTRIES
+// =============================================================================
+
+model JournalEntry {
+  id              String          @id @default(cuid())
+  company_id      String
+  period_id       String?
+  entry_number    String
+  date            DateTime
+  type            JournalEntryType @default(STANDARD)
+  memo            String?
+  reference       String?
+  is_adjusting    Boolean         @default(false)
+  is_reversing    Boolean         @default(false)
+  reverses_id     String?         // ID of entry this reverses
+  source_type     String?         // "INVOICE", "BILL", "PAYMENT", etc.
+  source_id       String?         // ID of source document
+  created_by      String
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  period          AccountingPeriod? @relation(fields: [period_id], references: [id])
+  lines           JournalEntryLine[]
+
+  @@index([company_id])
+  @@index([company_id, date])
+  @@map("journal_entries")
+}
+
+model JournalEntryLine {
+  id               String       @id @default(cuid())
+  company_id       String
+  journal_entry_id String
+  account_id       String
+  debit            Decimal      @default(0) @db.Decimal(15, 2)
+  credit           Decimal      @default(0) @db.Decimal(15, 2)
+  memo             String?
+  job_id           String?
+  phase_id         String?
+  cost_code_id     String?
+  created_at       DateTime     @default(now())
+
+  journal_entry    JournalEntry @relation(fields: [journal_entry_id], references: [id])
+  account          Account      @relation(fields: [account_id], references: [id])
+  job              Job?         @relation(fields: [job_id], references: [id])
+  phase            JobPhase?    @relation(fields: [phase_id], references: [id])
+  cost_code        CostCode?    @relation(fields: [cost_code_id], references: [id])
+
+  @@index([company_id])
+  @@index([journal_entry_id])
+  @@map("journal_entry_lines")
+}
+
+// =============================================================================
+// CUSTOMERS
+// =============================================================================
+
+model Customer {
+  id            String    @id @default(cuid())
+  company_id    String
+  parent_id     String?   // sub-customers
+  name          String
+  display_name  String
+  email         String?
+  phone         String?
+  address       Json?
+  tax_id        String?
+  is_active     Boolean   @default(true)
+  notes         String?
+  credit_limit  Decimal?  @db.Decimal(15, 2)
+  created_at    DateTime  @default(now())
+  updated_at    DateTime  @updatedAt
+
+  parent        Customer? @relation("CustomerHierarchy", fields: [parent_id], references: [id])
+  sub_customers Customer[] @relation("CustomerHierarchy")
+  jobs          Job[]
+  invoices      Invoice[]
+  estimates     Estimate[]
+
+  @@index([company_id])
+  @@map("customers")
+}
+
+// =============================================================================
+// VENDORS & SUBCONTRACTORS
+// =============================================================================
+
+model Vendor {
+  id              String    @id @default(cuid())
+  company_id      String
+  name            String
+  display_name    String
+  email           String?
+  phone           String?
+  address         Json?
+  tax_id          String?   // EIN or SSN for 1099
+  vendor_type     VendorType @default(VENDOR)
+  is_1099         Boolean   @default(false)
+  is_active       Boolean   @default(true)
+  notes           String?
+  
+  // Insurance tracking
+  coi_expiry      DateTime?
+  license_expiry  DateTime?
+  
+  // Portal access
+  portal_email    String?   @unique
+  portal_enabled  Boolean   @default(false)
+  
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  bills           Bill[]
+  purchase_orders PurchaseOrder[]
+  subcontracts    Subcontract[]
+  vendor_invoices VendorPortalInvoice[]
+  payments        VendorPayment[]
+
+  @@index([company_id])
+  @@map("vendors")
+}
+
+// =============================================================================
+// JOBS / PROJECTS
+// =============================================================================
+
+model Job {
+  id              String    @id @default(cuid())
+  company_id      String
+  customer_id     String
+  job_number      String
+  name            String
+  description     String?
+  status          JobStatus @default(PENDING)
+  type            String?   // Residential, Commercial, etc.
+  
+  // Dates
+  start_date      DateTime?
+  projected_end   DateTime?
+  actual_end      DateTime?
+  
+  // Contract
+  contract_amount Decimal   @default(0) @db.Decimal(15, 2)
+  original_contract Decimal @default(0) @db.Decimal(15, 2)
+  
+  // Settings
+  retainage_pct   Decimal   @default(0) @db.Decimal(5, 2)
+  billing_method  BillingMethod @default(PROGRESS)
+  
+  address         Json?
+  notes           String?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  customer        Customer  @relation(fields: [customer_id], references: [id])
+  phases          JobPhase[]
+  budgets         JobBudget[]
+  invoices        Invoice[]
+  estimates       Estimate[]
+  change_orders   ChangeOrder[]
+  purchase_orders PurchaseOrder[]
+  subcontracts    Subcontract[]
+  kanban_cards    KanbanCard[]
+  daily_logs      DailyLog[]
+  journal_lines   JournalEntryLine[]
+  documents       Document[]
+
+  @@unique([company_id, job_number])
+  @@index([company_id])
+  @@map("jobs")
+}
+
+model JobPhase {
+  id          String    @id @default(cuid())
+  company_id  String
+  job_id      String
+  name        String
+  code        String?
+  description String?
+  order       Int       @default(0)
+  is_active   Boolean   @default(true)
+  created_at  DateTime  @default(now())
+
+  job         Job       @relation(fields: [job_id], references: [id])
+  budgets     JobBudget[]
+  journal_lines JournalEntryLine[]
+  timesheet_lines TimesheetLine[]
+  bill_lines  BillLine[]
+  invoice_lines InvoiceLine[]
+
+  @@index([company_id, job_id])
+  @@map("job_phases")
+}
+
+model CostCode {
+  id          String    @id @default(cuid())
+  company_id  String
+  code        String
+  name        String
+  category    CostCategory
+  is_active   Boolean   @default(true)
+  created_at  DateTime  @default(now())
+
+  budgets     JobBudget[]
+  journal_lines JournalEntryLine[]
+  timesheet_lines TimesheetLine[]
+  bill_lines  BillLine[]
+  invoice_lines InvoiceLine[]
+
+  @@unique([company_id, code])
+  @@index([company_id])
+  @@map("cost_codes")
+}
+
+model JobBudget {
+  id              String    @id @default(cuid())
+  company_id      String
+  job_id          String
+  phase_id        String?
+  cost_code_id    String?
+  original_amount Decimal   @default(0) @db.Decimal(15, 2)
+  revised_amount  Decimal   @default(0) @db.Decimal(15, 2)
+  notes           String?
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+
+  job         Job       @relation(fields: [job_id], references: [id])
+  phase       JobPhase? @relation(fields: [phase_id], references: [id])
+  cost_code   CostCode? @relation(fields: [cost_code_id], references: [id])
+
+  @@index([company_id, job_id])
+  @@map("job_budgets")
+}
+
+// =============================================================================
+// ESTIMATES
+// =============================================================================
+
+model Estimate {
+  id              String         @id @default(cuid())
+  company_id      String
+  estimate_number String
+  customer_id     String
+  job_id          String?
+  date            DateTime
+  expiry_date     DateTime?
+  status          EstimateStatus @default(DRAFT)
+  title           String?
+  notes           String?
+  subtotal        Decimal        @default(0) @db.Decimal(15, 2)
+  tax_amount      Decimal        @default(0) @db.Decimal(15, 2)
+  total           Decimal        @default(0) @db.Decimal(15, 2)
+  created_by      String
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  customer        Customer       @relation(fields: [customer_id], references: [id])
+  job             Job?           @relation(fields: [job_id], references: [id])
+  lines           EstimateLine[]
+  change_orders   ChangeOrder[]
+  invoices        Invoice[]
+
+  @@unique([company_id, estimate_number])
+  @@index([company_id])
+  @@map("estimates")
+}
+
+model EstimateLine {
+  id           String   @id @default(cuid())
+  company_id   String
+  estimate_id  String
+  description  String
+  quantity     Decimal  @db.Decimal(10, 3)
+  unit         String?
+  unit_cost    Decimal  @db.Decimal(15, 2)
+  markup_pct   Decimal  @default(0) @db.Decimal(5, 2)
+  total        Decimal  @db.Decimal(15, 2)
+  cost_code_id String?
+  phase_id     String?
+  order        Int      @default(0)
+  created_at   DateTime @default(now())
+
+  estimate     Estimate @relation(fields: [estimate_id], references: [id])
+
+  @@index([estimate_id])
+  @@map("estimate_lines")
+}
+
+// =============================================================================
+// CHANGE ORDERS
+// =============================================================================
+
+model ChangeOrder {
+  id            String            @id @default(cuid())
+  company_id    String
+  job_id        String
+  estimate_id   String?
+  co_number     String
+  title         String
+  description   String?
+  status        ChangeOrderStatus @default(PENDING)
+  amount        Decimal           @db.Decimal(15, 2)
+  approved_at   DateTime?
+  approved_by   String?
+  rejected_at   DateTime?
+  notes         String?
+  created_by    String
+  created_at    DateTime          @default(now())
+  updated_at    DateTime          @updatedAt
+
+  job           Job               @relation(fields: [job_id], references: [id])
+  estimate      Estimate?         @relation(fields: [estimate_id], references: [id])
+
+  @@unique([company_id, co_number])
+  @@index([company_id, job_id])
+  @@map("change_orders")
+}
+
+// =============================================================================
+// INVOICES (AR)
+// =============================================================================
+
+model Invoice {
+  id              String        @id @default(cuid())
+  company_id      String
+  invoice_number  String
+  customer_id     String
+  job_id          String?
+  estimate_id     String?
+  period_id       String?
+  date            DateTime
+  due_date        DateTime?
+  status          InvoiceStatus @default(DRAFT)
+  billing_type    BillingMethod @default(STANDARD)
+  
+  // AIA specific
+  application_number Int?
+  period_from     DateTime?
+  period_to       DateTime?
+  
+  // Amounts
+  subtotal        Decimal       @default(0) @db.Decimal(15, 2)
+  tax_amount      Decimal       @default(0) @db.Decimal(15, 2)
+  retainage_pct   Decimal       @default(0) @db.Decimal(5, 2)
+  retainage_amount Decimal      @default(0) @db.Decimal(15, 2)
+  total           Decimal       @default(0) @db.Decimal(15, 2)
+  amount_paid     Decimal       @default(0) @db.Decimal(15, 2)
+  balance_due     Decimal       @default(0) @db.Decimal(15, 2)
+  
+  notes           String?
+  created_by      String
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  customer        Customer      @relation(fields: [customer_id], references: [id])
+  job             Job?          @relation(fields: [job_id], references: [id])
+  estimate        Estimate?     @relation(fields: [estimate_id], references: [id])
+  lines           InvoiceLine[]
+  payments        PaymentApplication[]
+
+  @@unique([company_id, invoice_number])
+  @@index([company_id])
+  @@index([company_id, customer_id])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id            String   @id @default(cuid())
+  company_id    String
+  invoice_id    String
+  description   String
+  quantity      Decimal  @db.Decimal(10, 3)
+  unit_price    Decimal  @db.Decimal(15, 2)
+  amount        Decimal  @db.Decimal(15, 2)
+  phase_id      String?
+  cost_code_id  String?
+  pct_complete  Decimal? @db.Decimal(5, 2) // for progress invoicing
+  is_billable   Boolean  @default(true)
+  order         Int      @default(0)
+  created_at    DateTime @default(now())
+
+  invoice       Invoice  @relation(fields: [invoice_id], references: [id])
+  phase         JobPhase? @relation(fields: [phase_id], references: [id])
+  cost_code     CostCode? @relation(fields: [cost_code_id], references: [id])
+
+  @@index([invoice_id])
+  @@map("invoice_lines")
+}
+
+model CustomerPayment {
+  id              String   @id @default(cuid())
+  company_id      String
+  customer_id     String
+  date            DateTime
+  amount          Decimal  @db.Decimal(15, 2)
+  method          PaymentMethod
+  reference       String?
+  memo            String?
+  bank_account_id String?
+  created_by      String
+  created_at      DateTime @default(now())
+
+  applications    PaymentApplication[]
+
+  @@index([company_id])
+  @@map("customer_payments")
+}
+
+model PaymentApplication {
+  id          String          @id @default(cuid())
+  company_id  String
+  payment_id  String
+  invoice_id  String
+  amount      Decimal         @db.Decimal(15, 2)
+  created_at  DateTime        @default(now())
+
+  payment     CustomerPayment @relation(fields: [payment_id], references: [id])
+  invoice     Invoice         @relation(fields: [invoice_id], references: [id])
+
+  @@index([company_id])
+  @@map("payment_applications")
+}
+
+// =============================================================================
+// BILLS (AP)
+// =============================================================================
+
+model Bill {
+  id              String     @id @default(cuid())
+  company_id      String
+  bill_number     String?
+  vendor_id       String
+  po_id           String?
+  period_id       String?
+  date            DateTime
+  due_date        DateTime?
+  status          BillStatus @default(DRAFT)
+  
+  subtotal        Decimal    @default(0) @db.Decimal(15, 2)
+  tax_amount      Decimal    @default(0) @db.Decimal(15, 2)
+  retainage_pct   Decimal    @default(0) @db.Decimal(5, 2)
+  retainage_amount Decimal   @default(0) @db.Decimal(15, 2)
+  total           Decimal    @default(0) @db.Decimal(15, 2)
+  amount_paid     Decimal    @default(0) @db.Decimal(15, 2)
+  balance_due     Decimal    @default(0) @db.Decimal(15, 2)
+  
+  memo            String?
+  source          BillSource @default(MANUAL)
+  vendor_portal_invoice_id String?
+  created_by      String
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
+
+  vendor          Vendor     @relation(fields: [vendor_id], references: [id])
+  purchase_order  PurchaseOrder? @relation(fields: [po_id], references: [id])
+  lines           BillLine[]
+  payments        VendorPaymentApplication[]
+
+  @@index([company_id])
+  @@index([company_id, vendor_id])
+  @@map("bills")
+}
+
+model BillLine {
+  id            String   @id @default(cuid())
+  company_id    String
+  bill_id       String
+  description   String
+  quantity      Decimal  @db.Decimal(10, 3)
+  unit_price    Decimal  @db.Decimal(15, 2)
+  amount        Decimal  @db.Decimal(15, 2)
+  account_id    String?
+  job_id        String?
+  phase_id      String?
+  cost_code_id  String?
+  is_billable   Boolean  @default(true)
+  order         Int      @default(0)
+  created_at    DateTime @default(now())
+
+  bill          Bill     @relation(fields: [bill_id], references: [id])
+  phase         JobPhase? @relation(fields: [phase_id], references: [id])
+  cost_code     CostCode? @relation(fields: [cost_code_id], references: [id])
+
+  @@index([bill_id])
+  @@map("bill_lines")
+}
+
+model VendorPayment {
+  id              String   @id @default(cuid())
+  company_id      String
+  vendor_id       String
+  date            DateTime
+  amount          Decimal  @db.Decimal(15, 2)
+  method          PaymentMethod
+  reference       String?
+  memo            String?
+  bank_account_id String?
+  is_1099_eligible Boolean @default(false)
+  created_by      String
+  created_at      DateTime @default(now())
+
+  vendor          Vendor   @relation(fields: [vendor_id], references: [id])
+  applications    VendorPaymentApplication[]
+
+  @@index([company_id])
+  @@map("vendor_payments")
+}
+
+model VendorPaymentApplication {
+  id          String        @id @default(cuid())
+  company_id  String
+  payment_id  String
+  bill_id     String
+  amount      Decimal       @db.Decimal(15, 2)
+  created_at  DateTime      @default(now())
+
+  payment     VendorPayment @relation(fields: [payment_id], references: [id])
+  bill        Bill          @relation(fields: [bill_id], references: [id])
+
+  @@index([company_id])
+  @@map("vendor_payment_applications")
+}
+
+// =============================================================================
+// PURCHASE ORDERS
+// =============================================================================
+
+model PurchaseOrder {
+  id            String   @id @default(cuid())
+  company_id    String
+  po_number     String
+  vendor_id     String
+  job_id        String?
+  date          DateTime
+  expected_date DateTime?
+  status        POStatus @default(OPEN)
+  total         Decimal  @default(0) @db.Decimal(15, 2)
+  received      Decimal  @default(0) @db.Decimal(15, 2)
+  memo          String?
+  created_by    String
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  vendor        Vendor   @relation(fields: [vendor_id], references: [id])
+  job           Job?     @relation(fields: [job_id], references: [id])
+  lines         PurchaseOrderLine[]
+  bills         Bill[]
+
+  @@unique([company_id, po_number])
+  @@index([company_id])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id            String        @id @default(cuid())
+  company_id    String
+  po_id         String
+  description   String
+  quantity      Decimal       @db.Decimal(10, 3)
+  unit_price    Decimal       @db.Decimal(15, 2)
+  amount        Decimal       @db.Decimal(15, 2)
+  received_qty  Decimal       @default(0) @db.Decimal(10, 3)
+  cost_code_id  String?
+  order         Int           @default(0)
+  created_at    DateTime      @default(now())
+
+  purchase_order PurchaseOrder @relation(fields: [po_id], references: [id])
+
+  @@index([po_id])
+  @@map("purchase_order_lines")
+}
+
+// =============================================================================
+// SUBCONTRACTS
+// =============================================================================
+
+model Subcontract {
+  id            String   @id @default(cuid())
+  company_id    String
+  vendor_id     String
+  job_id        String
+  contract_number String
+  description   String?
+  amount        Decimal  @db.Decimal(15, 2)
+  status        SubcontractStatus @default(ACTIVE)
+  start_date    DateTime?
+  end_date      DateTime?
+  notes         String?
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  vendor        Vendor   @relation(fields: [vendor_id], references: [id])
+  job           Job      @relation(fields: [job_id], references: [id])
+
+  @@index([company_id])
+  @@map("subcontracts")
+}
+
+// =============================================================================
+// BANKING
+// =============================================================================
+
+model BankAccount {
+  id              String   @id @default(cuid())
+  company_id      String
+  name            String
+  account_type    BankAccountType
+  institution     String?
+  last_four       String?
+  routing_number  String?
+  current_balance Decimal  @default(0) @db.Decimal(15, 2)
+  gl_account_id   String?
+  is_active       Boolean  @default(true)
+  plaid_account_id String?
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  transactions    BankTransaction[]
+  reconciliations BankReconciliation[]
+
+  @@index([company_id])
+  @@map("bank_accounts")
+}
+
+model BankTransaction {
+  id              String                @id @default(cuid())
+  company_id      String
+  bank_account_id String
+  date            DateTime
+  description     String
+  amount          Decimal               @db.Decimal(15, 2)
+  type            BankTransactionType
+  status          BankTransactionStatus @default(FOR_REVIEW)
+  reference       String?
+  merchant        String?
+  
+  // Matching
+  matched_type    String?   // "BILL", "INVOICE", "EXPENSE"
+  matched_id      String?
+  
+  // Coding (for AMEX/CC charges)
+  account_id      String?
+  job_id          String?
+  phase_id        String?
+  cost_code_id    String?
+  memo            String?
+  
+  // Auto-rule
+  rule_id         String?
+  
+  source          String   @default("IMPORT") // "IMPORT", "PLAID", "MANUAL"
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+
+  bank_account    BankAccount @relation(fields: [bank_account_id], references: [id])
+
+  @@index([company_id])
+  @@index([company_id, bank_account_id])
+  @@map("bank_transactions")
+}
+
+model BankRule {
+  id              String   @id @default(cuid())
+  company_id      String
+  name            String
+  merchant_contains String?
+  description_contains String?
+  amount_equals   Decimal? @db.Decimal(15, 2)
+  account_id      String?
+  job_id          String?
+  cost_code_id    String?
+  vendor_id       String?
+  priority        Int      @default(0)
+  is_active       Boolean  @default(true)
+  created_at      DateTime @default(now())
+
+  @@index([company_id])
+  @@map("bank_rules")
+}
+
+model BankReconciliation {
+  id              String   @id @default(cuid())
+  company_id      String
+  bank_account_id String
+  statement_date  DateTime
+  statement_balance Decimal @db.Decimal(15, 2)
+  cleared_balance Decimal  @default(0) @db.Decimal(15, 2)
+  difference      Decimal  @default(0) @db.Decimal(15, 2)
+  status          ReconciliationStatus @default(IN_PROGRESS)
+  completed_at    DateTime?
+  completed_by    String?
+  created_at      DateTime @default(now())
+
+  bank_account    BankAccount @relation(fields: [bank_account_id], references: [id])
+
+  @@index([company_id])
+  @@map("bank_reconciliations")
+}
+
+// =============================================================================
+// EMPLOYEES & PAYROLL
+// =============================================================================
+
+model Employee {
+  id              String      @id @default(cuid())
+  company_id      String
+  first_name      String
+  last_name       String
+  email           String?
+  phone           String?
+  ssn_last_four   String?     // Never store full SSN
+  address         Json?
+  hire_date       DateTime?
+  termination_date DateTime?
+  status          EmployeeStatus @default(ACTIVE)
+  pay_type        PayType     @default(HOURLY)
+  pay_rate        Decimal     @db.Decimal(10, 2)
+  overtime_rate   Decimal?    @db.Decimal(10, 2)
+  pay_schedule    PaySchedule @default(WEEKLY)
+  department      String?
+  workers_comp_code String?
+  federal_filing  Json?       // W-4 data
+  state_filings   Json?       // Multiple states
+  direct_deposit  Json?       // Bank info (encrypted)
+  created_at      DateTime    @default(now())
+  updated_at      DateTime    @updatedAt
+
+  timesheets      Timesheet[]
+  payroll_items   PayrollItem[]
+
+  @@index([company_id])
+  @@map("employees")
+}
+
+model Timesheet {
+  id              String          @id @default(cuid())
+  company_id      String
+  employee_id     String
+  week_start      DateTime
+  status          TimesheetStatus @default(DRAFT)
+  approved_by     String?
+  approved_at     DateTime?
+  total_hours     Decimal         @default(0) @db.Decimal(8, 2)
+  created_at      DateTime        @default(now())
+  updated_at      DateTime        @updatedAt
+
+  employee        Employee        @relation(fields: [employee_id], references: [id])
+  lines           TimesheetLine[]
+
+  @@index([company_id])
+  @@map("timesheets")
+}
+
+model TimesheetLine {
+  id              String    @id @default(cuid())
+  company_id      String
+  timesheet_id    String
+  date            DateTime
+  job_id          String?
+  phase_id        String?
+  cost_code_id    String?
+  kanban_card_id  String?
+  hours           Decimal   @db.Decimal(8, 2)
+  overtime_hours  Decimal   @default(0) @db.Decimal(8, 2)
+  is_billable     Boolean   @default(true)
+  description     String?
+  created_at      DateTime  @default(now())
+
+  timesheet       Timesheet @relation(fields: [timesheet_id], references: [id])
+  phase           JobPhase? @relation(fields: [phase_id], references: [id])
+  cost_code       CostCode? @relation(fields: [cost_code_id], references: [id])
+
+  @@index([timesheet_id])
+  @@map("timesheet_lines")
+}
+
+model PayrollRun {
+  id              String        @id @default(cuid())
+  company_id      String
+  period_start    DateTime
+  period_end      DateTime
+  pay_date        DateTime
+  status          PayrollStatus @default(DRAFT)
+  total_gross     Decimal       @default(0) @db.Decimal(15, 2)
+  total_taxes     Decimal       @default(0) @db.Decimal(15, 2)
+  total_net       Decimal       @default(0) @db.Decimal(15, 2)
+  created_by      String
+  created_at      DateTime      @default(now())
+  updated_at      DateTime      @updatedAt
+
+  items           PayrollItem[]
+
+  @@index([company_id])
+  @@map("payroll_runs")
+}
+
+model PayrollItem {
+  id              String     @id @default(cuid())
+  company_id      String
+  payroll_run_id  String
+  employee_id     String
+  regular_hours   Decimal    @default(0) @db.Decimal(8, 2)
+  overtime_hours  Decimal    @default(0) @db.Decimal(8, 2)
+  gross_pay       Decimal    @default(0) @db.Decimal(15, 2)
+  federal_tax     Decimal    @default(0) @db.Decimal(15, 2)
+  state_tax       Decimal    @default(0) @db.Decimal(15, 2)
+  social_security Decimal    @default(0) @db.Decimal(15, 2)
+  medicare        Decimal    @default(0) @db.Decimal(15, 2)
+  other_deductions Decimal   @default(0) @db.Decimal(15, 2)
+  net_pay         Decimal    @default(0) @db.Decimal(15, 2)
+  job_allocations Json?      // Array of {job_id, hours, amount}
+  created_at      DateTime   @default(now())
+
+  payroll_run     PayrollRun @relation(fields: [payroll_run_id], references: [id])
+  employee        Employee   @relation(fields: [employee_id], references: [id])
+
+  @@index([company_id])
+  @@map("payroll_items")
+}
+
+// =============================================================================
+// KANBAN
+// =============================================================================
+
+model KanbanBoard {
+  id          String         @id @default(cuid())
+  company_id  String
+  job_id      String?
+  name        String
+  is_default  Boolean        @default(false)
+  created_at  DateTime       @default(now())
+  updated_at  DateTime       @updatedAt
+
+  columns     KanbanColumn[]
+
+  @@index([company_id])
+  @@map("kanban_boards")
+}
+
+model KanbanColumn {
+  id          String       @id @default(cuid())
+  company_id  String
+  board_id    String
+  name        String
+  order       Int          @default(0)
+  wip_limit   Int?
+  color       String?
+  created_at  DateTime     @default(now())
+
+  board       KanbanBoard  @relation(fields: [board_id], references: [id])
+  cards       KanbanCard[]
+
+  @@index([board_id])
+  @@map("kanban_columns")
+}
+
+model KanbanCard {
+  id              String     @id @default(cuid())
+  company_id      String
+  column_id       String
+  job_id          String?
+  title           String
+  description     String?
+  due_date        DateTime?
+  assigned_to     String?
+  order           Int        @default(0)
+  priority        Priority   @default(MEDIUM)
+  estimated_hours Decimal?   @db.Decimal(8, 2)
+  cost_code_id    String?
+  is_billable     Boolean    @default(false)
+  created_by      String
+  created_at      DateTime   @default(now())
+  updated_at      DateTime   @updatedAt
+
+  column          KanbanColumn @relation(fields: [column_id], references: [id])
+  job             Job?       @relation(fields: [job_id], references: [id])
+  checklists      KanbanChecklist[]
+  attachments     Document[]
+  timesheet_lines TimesheetLine[]
+
+  @@index([company_id])
+  @@map("kanban_cards")
+}
+
+model KanbanChecklist {
+  id          String     @id @default(cuid())
+  card_id     String
+  text        String
+  is_done     Boolean    @default(false)
+  order       Int        @default(0)
+  created_at  DateTime   @default(now())
+
+  card        KanbanCard @relation(fields: [card_id], references: [id])
+
+  @@index([card_id])
+  @@map("kanban_checklists")
+}
+
+// =============================================================================
+// DAILY LOGS
+// =============================================================================
+
+model DailyLog {
+  id          String   @id @default(cuid())
+  company_id  String
+  job_id      String
+  date        DateTime
+  weather     String?
+  temperature String?
+  crew_count  Int?
+  work_performed String?
+  issues      String?
+  notes       String?
+  created_by  String
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  job         Job      @relation(fields: [job_id], references: [id])
+  attachments Document[]
+
+  @@index([company_id, job_id])
+  @@map("daily_logs")
+}
+
+// =============================================================================
+// DOCUMENTS & FILES
+// =============================================================================
+
+model Document {
+  id              String   @id @default(cuid())
+  company_id      String
+  name            String
+  file_url        String   // R2 URL
+  file_size       Int?
+  mime_type       String?
+  version         Int      @default(1)
+  entity_type     String   // "JOB", "BILL", "INVOICE", "KANBAN_CARD", "DAILY_LOG"
+  entity_id       String
+  uploaded_by     String
+  is_blueprint    Boolean  @default(false)
+  created_at      DateTime @default(now())
+
+  job             Job?          @relation(fields: [entity_id], references: [id], map: "doc_job_fk")
+  kanban_card     KanbanCard?   @relation(fields: [entity_id], references: [id], map: "doc_kanban_fk")
+  daily_log       DailyLog?     @relation(fields: [entity_id], references: [id], map: "doc_daily_log_fk")
+
+  @@index([company_id])
+  @@index([entity_type, entity_id])
+  @@map("documents")
+}
+
+// =============================================================================
+// VENDOR PORTAL
+// =============================================================================
+
+model VendorPortalInvoice {
+  id              String              @id @default(cuid())
+  company_id      String
+  vendor_id       String
+  job_id          String?
+  invoice_number  String
+  invoice_date    DateTime
+  due_date        DateTime?
+  amount          Decimal             @db.Decimal(15, 2)
+  retainage_pct   Decimal             @default(0) @db.Decimal(5, 2)
+  retainage_amount Decimal            @default(0) @db.Decimal(15, 2)
+  status          VendorInvoiceStatus @default(SUBMITTED)
+  file_url        String?
+  notes           String?
+  rejection_reason String?
+  bill_id         String?             // Created bill after approval
+  submitted_at    DateTime            @default(now())
+  reviewed_at     DateTime?
+  approved_at     DateTime?
+  created_at      DateTime            @default(now())
+  updated_at      DateTime            @updatedAt
+
+  vendor          Vendor              @relation(fields: [vendor_id], references: [id])
+  lines           VendorPortalInvoiceLine[]
+
+  @@index([company_id])
+  @@map("vendor_portal_invoices")
+}
+
+model VendorPortalInvoiceLine {
+  id              String              @id @default(cuid())
+  invoice_id      String
+  description     String
+  quantity        Decimal?            @db.Decimal(10, 3)
+  unit_price      Decimal?            @db.Decimal(15, 2)
+  amount          Decimal             @db.Decimal(15, 2)
+  phase_id        String?
+  cost_code_id    String?
+  order           Int                 @default(0)
+  created_at      DateTime            @default(now())
+
+  invoice         VendorPortalInvoice @relation(fields: [invoice_id], references: [id])
+
+  @@index([invoice_id])
+  @@map("vendor_portal_invoice_lines")
+}
+
+// =============================================================================
+// AI MODULE
+// =============================================================================
+
+model AIAnalysisJob {
+  id              String         @id @default(cuid())
+  company_id      String
+  job_id          String?
+  document_id     String?
+  status          AIJobStatus    @default(PENDING)
+  type            AIJobType      @default(BLUEPRINT_ANALYSIS)
+  input_file_url  String?
+  extracted_data  Json?
+  material_quantities Json?
+  calculated_cost Decimal?       @db.Decimal(15, 2)
+  proposal_url    String?
+  error_message   String?
+  created_by      String
+  created_at      DateTime       @default(now())
+  updated_at      DateTime       @updatedAt
+
+  @@index([company_id])
+  @@map("ai_analysis_jobs")
+}
+
+model MaterialPriceTable {
+  id          String   @id @default(cuid())
+  company_id  String
+  name        String
+  unit        String
+  unit_price  Decimal  @db.Decimal(15, 2)
+  category    String?
+  markup_pct  Decimal  @default(0) @db.Decimal(5, 2)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@index([company_id])
+  @@map("material_price_tables")
+}
+
+// =============================================================================
+// MIGRATION TOOL
+// =============================================================================
+
+model MigrationRun {
+  id              String          @id @default(cuid())
+  company_id      String
+  source_format   String          // "IIF", "CSV", "QBB"
+  status          MigrationStatus @default(PENDING)
+  total_records   Int             @default(0)
+  processed       Int             @default(0)
+  errors          Int             @default(0)
+  log             Json?
+  started_at      DateTime?
+  completed_at    DateTime?
+  created_by      String
+  created_at      DateTime        @default(now())
+
+  @@index([company_id])
+  @@map("migration_runs")
+}
+
+// =============================================================================
+// AUDIT LOG (Immutable)
+// =============================================================================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  company_id  String
+  user_id     String?
+  action      String   // "CREATE", "UPDATE", "DELETE", "CLOSE_PERIOD", "POST"
+  entity_type String
+  entity_id   String
+  before      Json?
+  after       Json?
+  ip_address  String?
+  created_at  DateTime @default(now())
+
+  @@index([company_id])
+  @@index([entity_type, entity_id])
+  @@map("audit_logs")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum AccountingMethod {
+  ACCRUAL
+  CASH
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  INCOME
+  EXPENSE
+  COST_OF_GOODS_SOLD
+}
+
+enum JournalEntryType {
+  STANDARD
+  ADJUSTING
+  REVERSING
+  CLOSING
+  OPENING
+}
+
+enum UserRole {
+  ADMIN
+  ACCOUNTANT
+  PROJECT_MANAGER
+  FIELD_SUPERVISOR
+  STAFF
+  VENDOR       // Vendor portal access
+  READ_ONLY
+}
+
+enum VendorType {
+  VENDOR
+  SUBCONTRACTOR
+  BOTH
+}
+
+enum JobStatus {
+  PENDING
+  AWARDED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+enum BillingMethod {
+  STANDARD
+  PROGRESS
+  AIA
+  TIME_AND_MATERIAL
+}
+
+enum EstimateStatus {
+  DRAFT
+  SENT
+  VIEWED
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum ChangeOrderStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  VOID
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIAL
+  PAID
+  OVERDUE
+  VOID
+}
+
+enum BillStatus {
+  DRAFT
+  PENDING_REVIEW
+  APPROVED
+  PARTIAL
+  PAID
+  VOID
+}
+
+enum BillSource {
+  MANUAL
+  VENDOR_PORTAL
+  BANK_FEED
+  PO_RECEIPT
+}
+
+enum POStatus {
+  OPEN
+  PARTIAL
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum SubcontractStatus {
+  ACTIVE
+  COMPLETED
+  TERMINATED
+}
+
+enum PaymentMethod {
+  CHECK
+  ACH
+  WIRE
+  CREDIT_CARD
+  CASH
+  OTHER
+}
+
+enum BankAccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  LINE_OF_CREDIT
+}
+
+enum BankTransactionType {
+  DEBIT
+  CREDIT
+}
+
+enum BankTransactionStatus {
+  FOR_REVIEW
+  MATCHED
+  EXCLUDED
+  POSTED
+}
+
+enum ReconciliationStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum PayType {
+  HOURLY
+  SALARY
+  CONTRACT
+}
+
+enum PaySchedule {
+  WEEKLY
+  BIWEEKLY
+  SEMIMONTHLY
+  MONTHLY
+}
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  LOCKED
+}
+
+enum PayrollStatus {
+  DRAFT
+  PROCESSING
+  COMPLETED
+  VOID
+}
+
+enum CostCategory {
+  LABOR
+  MATERIALS
+  EQUIPMENT
+  SUBCONTRACT
+  OVERHEAD
+  OTHER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum VendorInvoiceStatus {
+  SUBMITTED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  PAID
+}
+
+enum AIJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum AIJobType {
+  BLUEPRINT_ANALYSIS
+  PROPOSAL_GENERATION
+}
+
+enum MigrationStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  ROLLED_BACK
+}

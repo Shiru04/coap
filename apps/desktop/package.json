@@ -1,0 +1,49 @@
+{
+  "name": "@coap/desktop",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:next\" \"wait-on http://localhost:3000 && electron .\"",
+    "dev:next": "cd ../web && next dev",
+    "build": "next build ../web && electron-builder build",
+    "package:win": "electron-builder --win",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coap/shared": "*",
+    "better-sqlite3": "^11.7.0",
+    "electron-store": "^10.0.0",
+    "electron-updater": "^6.3.9"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "concurrently": "^9.1.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "wait-on": "^8.0.1",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "com.coap.desktop",
+    "productName": "COAP",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/.next",
+        "to": "web/.next"
+      }
+    ]
+  }
+}
